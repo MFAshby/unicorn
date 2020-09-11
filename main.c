@@ -129,7 +129,7 @@ void uninit_bcm2835(void) {
 }
 
 void graphics_callback(uint64_t total_elapsed) {
-	static const char* text = "Hello Unicorn!";
+	static const char* text = "Henry is the greatest!   ";
 	static uint64_t last_character_change = 0;
 	static uint16_t current_character_index = 0;
 
