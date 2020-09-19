@@ -1,10 +1,19 @@
+#define _GNU_SOURCE
 #include <stdio.h>
+#include <stdint.h>
 
 // For interaction with the unicorn via SPI
-#include <bcm2835.h>
+//#include <bcm2835.h>
 
-// For sleep function
+// For sleep function and file handling
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
+
+// For SPI interaction
+#include <sys/ioctl.h>
+#include <linux/types.h>
+#include <linux/spi/spidev.h>
 
 // Correctly handle interrupt signal and close gracefully
 #include <signal.h>
@@ -26,6 +35,9 @@
 #define DISPLAY_BUF_SIZE 769
 static char display_buffer[DISPLAY_BUF_SIZE];
 
+// File descriptor for open SPI device
+static int spidev;
+
 // For calculating the offset into the display buffer for a position
 int display_buffer_offset(uint8_t x, uint8_t y) {
 	// 1 leading byte for frame 
@@ -43,7 +55,7 @@ void display_buffer_set_pixel(uint8_t x, uint8_t y, uint8_t r, uint8_t g, uint8_
 	uint16_t offset = display_buffer_offset(x, y);
 	display_buffer[offset + 0] = r;
 	display_buffer[offset + 1] = g;
-	display_buffer[offset + 2]  = b;
+	display_buffer[offset + 2] = b;
 }
 
 // Reset the buffer to empty, i.e. all pixels off
@@ -54,7 +66,26 @@ void display_buffer_reset(void) {
 
 // Send the current buffer to the device
 void display_buffer_send(void) {
-	bcm2835_spi_writenb(display_buffer, sizeof(display_buffer));
+	//bcm2835_spi_writenb(display_buffer, sizeof(display_buffer));
+	//ssize_t w = write(spidev, display_buffer, sizeof(display_buffer));
+
+	//if (w != DISPLAY_BUF_SIZE) {
+	//	printf("didn't write full buffer to display!, wrote %ld\n", w);
+	//}
+
+	struct spi_ioc_transfer tr = {
+		.tx_buf = (unsigned long)display_buffer,
+		//.rx_buf = (unsigned long)rx,
+		.len = sizeof(display_buffer),
+		.delay_usecs = 0,
+		.speed_hz = 9000000,
+		.bits_per_word = 8,
+	};
+
+	int ret = ioctl(spidev, SPI_IOC_MESSAGE(1), &tr);
+	if (ret < 1) {
+		printf("Can't send SPI message\n");
+	}
 }
 
 // b/c sometimes this stuff goes wrong, just log it to the console!
@@ -106,6 +137,7 @@ void siginthandler(int sig) {
 
 // init the broadcom library for writing to SPI
 // returns 0 on success, 1 on any error
+/*
 int init_bcm2835(void) {
 	if (!bcm2835_init()) {
 		printf("Failed to start SPI! Are you running as root?\n");
@@ -127,6 +159,7 @@ void uninit_bcm2835(void) {
 	bcm2835_spi_end();
 	bcm2835_close();
 }
+*/
 
 void graphics_callback(uint64_t total_elapsed) {
 	static const char* text = "Henry is the greatest!   ";
@@ -201,6 +234,12 @@ void display_buffer_send_callback(uint64_t total_elapsed) {
 	display_buffer_send();
 }
 
+static void pabort(const char *s)
+{
+	perror(s);
+	abort();
+}
+
 int main(void) {
 	// hi
 	printf("Hello, Unicorn!\n");
@@ -209,9 +248,55 @@ int main(void) {
 	signal(SIGINT, siginthandler);
 
 	// Set up broadcom library
-	if (init_bcm2835()) {
+	//if (init_bcm2835()) {
+	//	return 1;
+	//}
+	spidev = open("/dev/spidev0.1", O_RDWR);
+	if (spidev == -1) {
+		printf("Failed to open /dev/spidev0.0\n");
 		return 1;
 	}
+
+	/*
+	 * spi mode
+	 */
+	uint8_t mode;
+	uint8_t bits;
+	uint32_t max_speed = 9000000;
+	int ret = ioctl(spidev, SPI_IOC_WR_MODE, &mode);
+	if (ret == -1)
+		pabort("can't set spi mode");
+
+	ret = ioctl(spidev, SPI_IOC_RD_MODE, &mode);
+	if (ret == -1)
+		pabort("can't get spi mode");
+
+	/*
+	 * bits per word
+	 */
+	ret = ioctl(spidev, SPI_IOC_WR_BITS_PER_WORD, &bits);
+	if (ret == -1)
+		pabort("can't set bits per word");
+
+	ret = ioctl(spidev, SPI_IOC_RD_BITS_PER_WORD, &bits);
+	if (ret == -1)
+		pabort("can't get bits per word");
+
+	/*
+	 * max speed hz
+	 */
+	ret = ioctl(spidev, SPI_IOC_WR_MAX_SPEED_HZ, &max_speed);
+	if (ret == -1)
+		pabort("can't set max speed hz");
+
+	ret = ioctl(spidev, SPI_IOC_RD_MAX_SPEED_HZ, &max_speed);
+	if (ret == -1)
+		pabort("can't get max speed hz");
+
+	printf("spi mode: %d\n", mode);
+	printf("bits per word: %d\n", bits);
+	printf("max speed: %d Hz (%d KHz)\n", max_speed, max_speed/1000);
+
 
 	// Set up freetype library
 	if (init_freetype2()) {
@@ -237,10 +322,10 @@ int main(void) {
 	// Clear the display after finishing
 	display_buffer_reset();
 	display_buffer_send();
-	bcm2835_spi_writenb(display_buffer, sizeof(display_buffer));
 	usleep(1000000);
 
 	// Clean up
-	uninit_bcm2835();
+	//uninit_bcm2835();
+	close(spidev);
 	return 0;
 }
